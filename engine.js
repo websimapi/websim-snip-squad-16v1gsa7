@@ -1,1 +1,1 @@
-export { DIRS, SIZE, centeredCells, gridFromCells, rotateGrid, worldCells, createState, getBody, applyAction, checkWin, snapshot } from "./server.js";
+export { ENGINE_VERSION, PHYSICS_STEP, createSimulation, stepSimulation, setControl, clearControls, applyAction, snapshot, hydrate, originalShape, polygonArea, worldShape, overlapShape, contains, setPose } from "./server.js";

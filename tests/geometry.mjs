@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {createSimulation,setPose,setControl,stepSimulation,applyAction,hydrate,snapshot,polygonArea,contains,originalShape} from '../server.js';
+const frame=(s,c={})=>{for(const [id,v]of Object.entries(c))setControl(s,+id,v);stepSimulation(s,1/60);};const run=(s,n,c={})=>{for(let i=0;i<n;i++)frame(s,c);};
+let s=createSimulation();run(s,80);setPose(s.bodies[0],350,405,0);setPose(s.bodies[1],350,584,0);setPose(s.bodies[2],500,584,0);run(s,50);assert(s.bodies[0].grounded);assert(s.bodies[0].y<500);const top=s.bodies[0].y;run(s,50,{0:{crouch:true}});assert(s.bodies[0].y>top+90);assert(s.bodies[0].grounded);
+applyAction(s,{type:'jump',body:2});run(s,8);const vy=s.bodies[2].physics.velocity.y;applyAction(s,{type:'jump',body:2});frame(s);assert(s.bodies[2].physics.velocity.y>vy);
+s=createSimulation();run(s,80);run(s,200,{0:{rotate:1}});assert(s.bodies[0].angle>Math.PI*2);setControl(s,0,{x:1});run(s,60);assert.equal(s.bodies[0].control.x,0);
+// Hole geometry remains genuinely empty when triangulated for collision.
+s=createSimulation();let snap=snapshot(s);snap.bodies[0].shape=[[[[-43,-56],[43,-56],[43,56],[-43,56],[-43,-56]],[[-20,-20],[-20,20],[20,20],[20,-20],[-20,-20]]]];snap.bodies[0].revision++;snap.bodies[0].x=400;snap.bodies[0].y=300;hydrate(s,snap);assert(!contains(s.bodies[0].shape,0,0));assert(contains(s.bodies[0].shape,30,0));const p=s.bodies[0];for(const part of p.physics.parts.slice(1)){const centroid=part.vertices.reduce((v,q)=>({x:v.x+q.x/part.vertices.length,y:v.y+q.y/part.vertices.length}),{x:0,y:0});assert(contains(p.shape,centroid.x-p.x,centroid.y-p.y));}
+applyAction(s,{type:"restore",body:0});setPose(s.bodies[1],400,300,0);applyAction(s,{type:'snip',body:1});assert(!s.bodies[0].alive);applyAction(s,{type:'restore',body:0});assert(s.bodies[0].alive);assert(Math.abs(polygonArea(s.bodies[0].shape)-polygonArea(originalShape()))<.001);
+console.log('PASS: partner standing/drop-through, no midair jump reset, full rotation, expired controls, hole collider, complete removal and reform.');
