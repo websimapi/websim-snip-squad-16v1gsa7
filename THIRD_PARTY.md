@@ -1,6 +1,6 @@
 # Third-party engine components
 
-All rendering assets and level designs in this project are authored in code. No Snipperclips assets are included.
+Level designs, geometry and shaders are authored in code. The wood, clay, paper and soil texture atlas in `textures/` was generated for this project with Websim image generation; its cropped albedo and bump maps are used by the materials. No Snipperclips assets are included.
 
 | Component | Version | Use | License |
 | --- | --- | --- | --- |
