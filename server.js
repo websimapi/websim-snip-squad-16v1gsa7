@@ -67,7 +67,10 @@ CREATE TABLE IF NOT EXISTS platform_progress (user_id TEXT NOT NULL,username TEX
 CREATE TABLE IF NOT EXISTS platform_clears (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,username TEXT,level INTEGER NOT NULL,seconds INTEGER,snips INTEGER,players INTEGER,lobby TEXT,created_at INTEGER);
 CREATE INDEX IF NOT EXISTS platform_clears_user ON platform_clears(user_id);
 `;
-export const schema=legacySchema+platformSchema;
+export const replaySchema=`CREATE TABLE IF NOT EXISTS replays (id TEXT PRIMARY KEY,level INTEGER NOT NULL,fps INTEGER NOT NULL,frame_count INTEGER NOT NULL,duration REAL NOT NULL,created_at INTEGER NOT NULL,manifest_json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS replays_recent ON replays(created_at DESC);
+CREATE TABLE IF NOT EXISTS replay_chunks (replay_id TEXT NOT NULL,part INTEGER NOT NULL,frames_json TEXT NOT NULL,PRIMARY KEY(replay_id,part));`;
+export const schema=legacySchema+platformSchema+replaySchema;
 
 // Simulation coordinates are pixels, +Y down. Rendering maps this plane into 3D.
 export const ENGINE_VERSION=2;
@@ -172,15 +175,49 @@ function tick(sim){
   sim.hold=inside?sim.hold+dt:0;if(sim.hold>.45){sim.won=true;sim.events.push({type:'won'});}
  }
 }
-export function stepSimulation(sim,seconds){if(sim.won)return;sim.accumulator+=Math.min(Math.max(seconds,0),.15);let n=0;while(sim.accumulator>=1/60&&n++<9){tick(sim);sim.accumulator-=1/60;if(sim.won)break;}}
+export function stepSimulation(sim,seconds){if(sim.won)return;sim.accumulator+=Math.min(Math.max(seconds,0),.15);let n=0;while(sim.accumulator>=1/60&&n++<9){tick(sim);sim.recordFrame?.();sim.accumulator-=1/60;if(sim.won)break;}}
 const round=n=>Math.round(n*100)/100;
-export function snapshot(sim,geometry=true){return {version:2,time:round(sim.time),won:sim.won,snips:sim.snips,actions:sim.actions,bridge:sim.bridge,released:sim.released,hold:sim.hold,
+
+// A frame for EVERY authoritative 60 Hz physics step; immutable shape revisions are deduplicated.
+// Static geometry is a versioned scene manifest; all animated assets have a recorded scene clock.
+export function beginRecording(sim){
+ const rec={format:1,sceneVersion:3,fps:60,level:sim.level.id,frames:[],geometry:{},events:[],seen:new WeakSet(),releaseAt:null,wonAt:null};
+ sim.recordFrame=()=>captureRecording(sim,rec);sim.recordFrame();return rec;
+}
+export function captureRecording(sim,rec){
+ const q=n=>Math.round(n*100000)/100000;
+ if(sim.released&&rec.releaseAt===null)rec.releaseAt=sim.time;
+ if(sim.won&&rec.wonAt===null)rec.wonAt=sim.time;
+ const bodies=sim.bodies.map(b=>{const key=b.id+':'+b.revision;if(!(key in rec.geometry))rec.geometry[key]=JSON.parse(JSON.stringify(b.shape));return [q(b.x),q(b.y),q(b.angle),q(b.physics?.velocity.x||0),q(b.physics?.velocity.y||0),Number(b.alive),b.revision,Number(b.grounded)];});
+ const ball=sim.ball?[q(sim.ball.position.x),q(sim.ball.position.y),q(sim.ball.angle),q(sim.ball.velocity.x),q(sim.ball.velocity.y)]:null;
+ const assets=[q(sim.time),sim.bridge?q(1-Math.exp(-(sim.time-rec.releaseAt)*5)):0,sim.released?494:488,sim.won?q(1-Math.exp(-(sim.time-rec.wonAt)*2)):0,q(.98+sim.time*Math.PI*2/240),q((.13+sim.time/1920)%1),q(sim.time*.018),q(sim.time*.003),q(sim.time*.2),q(Math.sin(sim.time*2)*.04),q(sim.time*18)];
+ rec.frames[sim.steps]=[q(sim.time),bodies,ball,(sim.released?1:0)|(sim.won?2:0),sim.snips,sim.actions,q(sim.hold),assets];
+ sim.visual={clock:assets[0],bridge:assets[1],buttonY:assets[2],flower:assets[3]};
+ for(const event of sim.events){if(rec.seen.has(event))continue;rec.seen.add(event);event.seed=rec.events.length+1;rec.events.push({frame:sim.steps,...JSON.parse(JSON.stringify(event))});}
+}
+export async function saveRecording(rec,env){
+ if(!rec||!(rec.frames.at(-1)?.[3]&2))return null;
+ const id=crypto.randomUUID(),now=Date.now(),last=rec.frames.at(-1),frames=rec.frames.slice();
+ // Include the post-completion bloom; transforms remain frozen while the scene clock advances.
+ for(let i=1;i<=180;i++){const f=last.slice();f[0]=last[0]+i/60;f[7]=[f[0],1,last[7][2],1-Math.exp(-i/30),.98+f[0]*Math.PI*2/240,(.13+f[0]/1920)%1,f[0]*.018,f[0]*.003,f[0]*.2,Math.sin(f[0]*2)*.04,f[0]*18];frames.push(f);}
+ const manifest={format:rec.format,sceneVersion:rec.sceneVersion,fps:rec.fps,level:rec.level,frameCount:frames.length,duration:frames.length/60,scene:{level:getLevel(rec.level),cycleSeconds:240,cloudShader:'garden-v3',staticAssets:'level-1-v3',landscapeSeed:28031,camera:{position:[6.4,5.65,24],target:[6.4,3.6,0],orthographic:[-7.05,7.05,3.97,-3.97]},transients:{type:'seeded-cut-particles',gravity:3,maxLife:1.5},frameLayout:['time','bodies[x,y,angle,vx,vy,alive,revision,grounded]','seed[x,y,angle,vx,vy]','flags','snips','actions','hold','assets[clock,bridgeScale,buttonY,flowerScale,sunAngle,moonPhase,cloudU,cloudV,targetRotation,flowerSway,walkPhase]']},geometry:rec.geometry,events:rec.events};
+ const parts=[];let part=[],bytes=0;
+ for(const f of frames){const str=JSON.stringify(f);if(bytes+str.length>64000&&part.length){parts.push('['+part.join(',')+']');part=[];bytes=0;}part.push(str);bytes+=str.length+1;}if(part.length)parts.push('['+part.join(',')+']');
+ // Publish metadata LAST: a reader never sees an incomplete replay.
+ const statements=parts.map((json,i)=>env.DB.prepare('INSERT INTO replay_chunks (replay_id,part,frames_json) VALUES (?,?,?)').bind(id,i,json));
+ try{for(let i=0;i<statements.length;i+=48)await env.DB.batch(statements.slice(i,i+48));
+ await env.DB.prepare('INSERT INTO replays (id,level,fps,frame_count,duration,created_at,manifest_json) VALUES (?,?,?,?,?,?,?)').bind(id,rec.level,60,frames.length,frames.length/60,now,JSON.stringify(manifest)).run();
+ }catch(e){await env.DB.prepare('DELETE FROM replay_chunks WHERE replay_id=?').bind(id).run();throw e;}
+ return id;
+}
+
+export function snapshot(sim,geometry=true){return {version:2,visual:sim.visual||null,time:round(sim.time),won:sim.won,snips:sim.snips,actions:sim.actions,bridge:sim.bridge,released:sim.released,hold:sim.hold,
  bodies:sim.bodies.map(b=>({id:b.id,x:round(b.x),y:round(b.y),angle:round(b.angle),vx:round(b.physics?.velocity.x||0),vy:round(b.physics?.velocity.y||0),alive:b.alive,revision:b.revision,grounded:b.grounded,control:b.control,...(geometry?{shape:b.shape}:{})})),
  ball:sim.ball?{x:round(sim.ball.position.x),y:round(sim.ball.position.y),vx:round(sim.ball.velocity.x),vy:round(sim.ball.velocity.y),angle:round(sim.ball.angle)}:null};}
 export function hydrate(sim,snap){
  if(snap.released&&!sim.released)releaseSeed(sim);
  if(!snap.released&&sim.released){if(sim.bridgeBody){Composite.remove(sim.engine.world,sim.bridgeBody);sim.solids=sim.solids.filter(p=>p!==sim.bridgeBody);}if(sim.ball)Composite.remove(sim.engine.world,sim.ball);sim.bridgeBody=null;sim.ball=null;sim.bridge=false;sim.released=false;}
- sim.time=snap.time;sim.won=snap.won;sim.snips=snap.snips;sim.actions=snap.actions;sim.hold=snap.hold;sim.accumulator=0;
+ sim.visual=snap.visual||null;sim.time=snap.time;sim.won=snap.won;sim.snips=snap.snips;sim.actions=snap.actions;sim.hold=snap.hold;sim.accumulator=0;
  for(const data of snap.bodies){const b=sim.bodies[data.id];if(data.shape&&(b.revision!==data.revision||b.alive!==data.alive||JSON.stringify(b.shape)!==JSON.stringify(data.shape))){b.shape=copy(data.shape);b.alive=data.alive;b.revision=data.revision;b.angle=data.angle;b.x=data.x;b.y=data.y;refreshBody(sim,b);}setPose(b,data.x,data.y,data.angle,data.vx,data.vy);b.grounded=data.grounded;b.control=data.control;b.lastControl=sim.time;if(b.grounded)b.lastGround=sim.time;}
  if(snap.ball&&sim.ball){Body.setPosition(sim.ball,{x:snap.ball.x,y:snap.ball.y});Body.setVelocity(sim.ball,{x:snap.ball.vx,y:snap.ball.vy});Body.setAngle(sim.ball,snap.ball.angle);}sim.events=[];
 }
@@ -188,6 +225,7 @@ export function hydrate(sim,snap){
 const lobbies = new Map();
 const conns = new Map();
 const where = new Map();
+const attractWatchers=new Map();
 let listDirty = false;
 const send = (id,msg) => { try { conns.get(id)?.send(msg); } catch {} };
 const nameOf = c => c.identity === "user" ? c.username : "Visitor " + c.id.slice(-3).toUpperCase();
@@ -216,7 +254,9 @@ function list() {return [...lobbies.values()].sort((a,b)=>b.created-a.created).s
 });}
 function notify(l) { for(const id of l.members.keys()) send(id,{t:"lobby",lobby:view(l,id)}); listDirty=true; }
 function sync(l,id) { send(id,{t:"sync",round:l.round,status:l.status,state:snapshot(l.state,true)}); }
-function broadcastState(l,geometry=false){const state=snapshot(l.state,geometry);for(const id of l.members.keys())send(id,{t:"snapshot",round:l.round,state});}
+function broadcastState(l,geometry=false){const state=snapshot(l.state,geometry);for(const id of l.members.keys())send(id,{t:"snapshot",round:l.round,state});for(const [id,w] of attractWatchers)if(w.code===l.code&&w.round===l.round)send(id,{t:"attract",live:true,code:l.code,round:l.round,state});}
+
+function emitEffect(l,event){for(const id of l.members.keys())send(id,{t:'effect',round:l.round,event});for(const [id,w] of attractWatchers)if(w.code===l.code&&w.round===l.round)send(id,{t:'attract-effect',event});}
 
 function leave(id) {
   const l=lobbies.get(where.get(id)); where.delete(id); if(!l)return;
@@ -243,6 +283,19 @@ async function saveClear(l,env) {
 }
 export default {async fetch(request,env){
   const url=new URL(request.url);
+
+  if(request.method==='GET'&&url.pathname==='/api/replays/random'){
+   const {results}=await env.DB.prepare('SELECT id,level,fps,frame_count,duration FROM replays ORDER BY created_at DESC LIMIT 32').all();
+   return Response.json({replay:results.length?results[Math.floor(Math.random()*results.length)]:null},{headers:{'cache-control':'no-store'}});
+  }
+  const replayMatch=url.pathname.match(/^\/api\/replays\/([a-f0-9-]{36})$/);
+  if(request.method==='GET'&&replayMatch){
+   const row=await env.DB.prepare('SELECT manifest_json FROM replays WHERE id=?').bind(replayMatch[1]).first();
+   if(!row)return Response.json({error:'Replay not found'},{status:404});
+   const {results}=await env.DB.prepare('SELECT frames_json FROM replay_chunks WHERE replay_id=? ORDER BY part').bind(replayMatch[1]).all();
+   return Response.json({id:replayMatch[1],...JSON.parse(row.manifest_json),frames:results.flatMap(r=>JSON.parse(r.frames_json))},{headers:{'cache-control':'public, max-age=86400'}});
+  }
+
   if(url.pathname==="/api/progress" && request.method==="GET") {
     const id=request.headers.get("x-websim-user-id");
     if(!id)return Response.json({signedIn:false,rows:[]});
@@ -257,11 +310,14 @@ export const room={
   async onMessage(c,raw,r,env){
     let m;try{m=JSON.parse(raw);}catch{return;}if(!m||typeof m!=="object")return;
     const err=msg=>send(c.id,{t:"error",msg});
+    if(m.t==="watch-attract"){if(m.enabled===false)attractWatchers.delete(c.id);else if(!where.has(c.id))attractWatchers.set(c.id,{code:null,round:null,nextSwitch:0});return;}
     if(m.t==="create") {
+      attractWatchers.delete(c.id);
       leave(c.id);const l={code:code(),host:c.id,locked:false,status:"lobby",round:0,created:Date.now(),seats:[null,null,null,null],members:new Map(),guestSerial:0,seq:0,state:createSimulation(getLevel(1))};
       lobbies.set(l.code,l);l.members.set(c.id,{name:nameOf(c),username:c.identity==="user"?c.username:null,identity:c.identity,userId:c.userId});where.set(c.id,l.code);claim(l,c);notify(l);sync(l,c.id);return;
     }
     if(m.t==="join") {
+      attractWatchers.delete(c.id);
       const l=lobbies.get(String(m.code||"").toUpperCase());if(!l)return err("That lobby has closed. Create a new one or try another code.");
       if(where.get(c.id)===l.code){notify(l);sync(l,c.id);return;}
       leave(c.id);l.members.set(c.id,{name:nameOf(c),username:c.identity==="user"?c.username:null,identity:c.identity,userId:c.userId});where.set(c.id,l.code);
@@ -279,7 +335,7 @@ export const room={
     if(m.t==="lock"){if(host){l.locked=!!m.locked;notify(l);}return;}
     if(m.t==="start") {
       if(!host)return err("Only the host can restart the puzzle.");
-      l.round++;l.seq=0;l.lastTick=Date.now();l.state=createSimulation(getLevel(1));l.status="playing";l.saved=null;notify(l);for(const id of l.members.keys())sync(l,id);return;
+      l.round++;l.seq=0;l.lastTick=Date.now();l.state=createSimulation(getLevel(1));l.status="playing";l.saved=null;l.replaySaved=null;l.recording=beginRecording(l.state);notify(l);for(const id of l.members.keys())sync(l,id);return;
     }
     if(m.t==="sync"){sync(l,c.id);return;}
     if(m.t==="inputs") {
@@ -298,22 +354,35 @@ export const room={
       if(now-(l.lastAction.get(key)||0)<(a.type==="snip"?180:110))return;l.lastAction.set(key,now);
       const first=l.state.events.length;
       const changed=applyAction(l.state,{type:a.type,body});
+      if(changed&&l.recording)captureRecording(l.state,l.recording);
       if(a.type==="snip"&&!changed)send(c.id,{t:"hint",msg:"Overlap another shape first. Stripes show exactly what will be cut."});
       if(changed&&a.type!=="jump")broadcastState(l,true);
-      for(const event of l.state.events.splice(first))for(const id of l.members.keys())send(id,{t:"effect",round:l.round,event});
+      for(const event of l.state.events.splice(first))emitEffect(l,event);
     }
 
   },
-  async onClose(c){leave(c.id);conns.delete(c.id);},
+  async onClose(c){leave(c.id);attractWatchers.delete(c.id);conns.delete(c.id);},
   async onTick(r,env){
     if(listDirty){listDirty=false;r.broadcast({t:"lobbies",list:list()});}
     const now=Date.now();
+    const playing=[...lobbies.values()].filter(l=>l.status==='playing'&&l.seats.some(Boolean));
+    for(const [id,w] of attractWatchers){
+      const target=lobbies.get(w.code);
+      if(!target||target.status!=='playing'||target.round!==w.round||now>=w.nextSwitch){
+        const pick=playing[Math.floor(Math.random()*playing.length)];w.nextSwitch=now+45000;
+        if(pick){w.code=pick.code;w.round=pick.round;send(id,{t:'attract',live:true,code:pick.code,round:pick.round,state:snapshot(pick.state,true)});}
+        else if(w.code!==false){w.code=false;w.round=null;send(id,{t:'attract',live:false});}
+      }
+    }
     for(const l of lobbies.values()){
       if(l.status!=="playing")continue;
       const dt=Math.min(.15,(now-(l.lastTick||now-50))/1000);l.lastTick=now;stepSimulation(l.state,dt);
       broadcastState(l,false);
-      for(const event of l.state.events.splice(0))for(const id of l.members.keys())send(id,{t:"effect",round:l.round,event});
-      if(l.state.won){l.status="won";notify(l);const round=l.round;try{await saveClear(l,env);}catch(e){if(l.round===round)l.saved="error";console.error("Progress save failed",e);}if(l.round===round)notify(l);}
+      for(const event of l.state.events.splice(0))emitEffect(l,event);
+      if(l.state.won){l.status="won";notify(l);const round=l.round,recording=l.recording;l.recording=null;l.state.recordFrame=null;try{await saveClear(l,env);}catch(e){if(l.round===round)l.saved="error";console.error("Progress save failed",e);}if(l.round===round)notify(l);
+        try{const replayId=await saveRecording(recording,env);if(l.round===round){l.replaySaved=replayId;for(const id of l.members.keys())send(id,{t:'replay-saved',id:replayId});}}
+        catch(e){console.error('Replay save failed',e);for(const id of l.members.keys())send(id,{t:'hint',msg:'Level complete, but the instant replay could not be saved.'});}
+      }
     }
   },
 };

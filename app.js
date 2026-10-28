@@ -2,12 +2,14 @@ import {createSimulation,stepSimulation,setControl,clearControls,applyAction,hyd
 import {getLevel} from './levels.js';
 import {createInput} from './input.js';
 import {createRenderer} from './renderer.js';
+import {createAttract} from './attract.js';
 const $=s=>document.querySelector(s), level=getLevel(1);
 const icon=id=>`<svg><use href="#i-${id}"/></svg>`;
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const img=(url,name,cls='')=>url?`<img class="${cls}" src="${escape(url)}" alt="${escape(name)}" referrerpolicy="no-referrer">`:`<span class="avatar-initial ${cls}">${escape(name?.[0]?.toUpperCase()||'?')}</span>`;
 let socket=null,identity=null,lobby=null,lobbies=[],state=createSimulation(level),active=0,online=false,pads=[],deviceSeats=new Map(),deviceActive=new Map(),progress=null,lastCode=null;
 const renderer=createRenderer($('#board'));
+const attract=createAttract({canvas:$('#attract-live'),replayHost:$('#attract-replay'),label:$('#attract-status'),requestSync:()=>{if(online&&!lobby)send({t:'watch-attract',enabled:true});}});
 const controls=new Map(),deviceControls=new Map();let latestSnapshot=0,needsSync=false;
 let toastTimer;
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4000);}
@@ -45,7 +47,8 @@ function updateCharacters(){
  $('#level-stats').textContent=`${Math.floor(state.time/60)}:${String(Math.floor(state.time)%60).padStart(2,'0')}  ·  ${state.snips} snip${state.snips===1?'':'s'}`;
 }
 function renderLobby(){
- if(!lobby){$('#menu').hidden=false;$('#game').hidden=true;renderer.show(false);return;}
+ if(!lobby){$('#menu').hidden=false;$('#game').hidden=true;renderer.show(false);attract.enabled(true);if(online)send({t:'watch-attract',enabled:true});return;}
+ attract.enabled(false);
  $('#menu').hidden=true;$('#game').hidden=false;renderer.show(true);$('#lobby-code').textContent=lobby.code;
  const mine=allMine();if(!mine.includes(active))active=mine[0]??0;
  $('#lock').innerHTML=icon('lock')+(lobby.locked?'Locked':'Open');$('#lock').disabled=!lobby.you.host;$('#lock').title=lobby.locked?'New arrivals can spectate only':'Anyone can join, including during a round';
@@ -67,6 +70,8 @@ function quickLobbies(){
  $('#lobby-list').innerHTML=lobbies.length?lobbies.map(l=>`<button type="button" class="lobby-row" data-lobby="${l.code}">${img(l.hostAvatar,l.hostName)}<span class="row-info"><b>@${escape(l.hostName)}</b><small>${l.code} · ${l.status==='playing'?'In a puzzle':l.status==='won'?'Puzzle complete':'Getting together'}</small></span><span>${l.full||l.locked?'Spectate':l.players+' / 4 →'}</span></button>`).join(''):'<p class="small-note">No open squads yet. Create a lobby and invite a friend.</p>';
 }
 function receive(m){
+ if(m.t==='attract'||m.t==='attract-effect'){if(!lobby)attract.receive(m);return;}
+ if(m.t==='replay-saved'&&m.id){$('#save-status').textContent+=' Instant replay saved.';return;}
  if(m.t==='welcome'){identity=m.you;online=true;connection('Ready to snip',true);}
  if(m.t==='lobbies'){lobbies=m.list;quickLobbies();}
  if(m.t==='lobby'){
@@ -93,10 +98,10 @@ async function connect(){
   socket=await window.WebsimSocket.joinRoom();
   socket.onmessage=e=>{try{receive(JSON.parse(e.data));}catch(err){console.error('Message failed',err);toast('A sync was interrupted. Rejoining the puzzle…');send({t:'sync'});}};
   online=true;connection('Ready to snip',true);
-  socket.onreconnect=()=>{online=true;controls.clear();clearControls(state);connection('Reconnected',true);if(lastCode)send({t:'join',code:lastCode});};
-  socket.onclose=e=>{online=false;controls.clear();clearControls(state);rebuild();connection('Disconnected',false);toast(e.reason||'Connection closed. Reload to reconnect.');};
-  const urlCode=new URL(location.href).searchParams.get('lobby');if(urlCode)send({t:'join',code:urlCode.toUpperCase()});
- }catch(err){console.error(err);connection('Connection unavailable',false);toast('Could not reach the realtime server. Reload to try again.');}
+  socket.onreconnect=()=>{online=true;controls.clear();clearControls(state);connection('Reconnected',true);if(lastCode)send({t:'join',code:lastCode});else send({t:'watch-attract',enabled:true});};
+  socket.onclose=e=>{online=false;attract.disconnected();controls.clear();clearControls(state);rebuild();connection('Disconnected',false);toast(e.reason||'Connection closed. Reload to reconnect.');};
+  const urlCode=new URL(location.href).searchParams.get('lobby');if(urlCode)send({t:'join',code:urlCode.toUpperCase()});else send({t:'watch-attract',enabled:true});
+ }catch(err){attract.disconnected();console.error(err);connection('Connection unavailable',false);toast('Could not reach the realtime server. Reload to try again.');}
 }
 async function loadProgress(){try{const r=await fetch('/api/progress');if(!r.ok)return;progress=await r.json();const row=progress.rows?.find(r=>r.level===1);if(row)$('#create').title=`Level 1 cleared ${row.clears} times · Best: ${row.best_seconds}s · ${row.best_snips} snips`;}catch{}}
 function updatePads(){

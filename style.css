@@ -19,3 +19,20 @@ dialog{border:1px solid #d5dccb;border-radius:18px;background:var(--paper);color
 @media(max-height:550px) and (orientation:landscape){.game{max-width:850px;padding-bottom:10px}.topbar:has(~.game:not([hidden])){height:42px}.game-top{margin-bottom:6px}.player-strip{margin-bottom:6px}.player-seat{padding:4px 8px}.board-wrap{max-width:720px;margin:auto}.game-bottom{margin-top:10px}.touch-controls{margin-top:8px}.mission-strip{margin-bottom:6px}}
 
 @media(min-width:701px) and (min-height:551px){.board-wrap{width:min(100%,calc((100svh - 335px)*1.77778));min-width:min(100%,460px);margin-inline:auto}.game-top{margin-bottom:14px}.game-bottom{margin-top:16px}.control-bar{margin-top:15px}}
+
+/* The title is a transparent window onto a real match or a completed-run replay. */
+.menu{max-width:none;isolation:isolate;overflow:hidden;display:flex;align-items:center;padding:40px max(6vw,32px) 90px;min-height:calc(100svh - 104px);background:#b6c8b9}
+.attract-scene{position:absolute;inset:0;z-index:-2;pointer-events:none;overflow:hidden}
+.attract-scene>canvas,.attract-scene>#attract-replay{position:absolute;width:100%;height:100%;inset:0;aspect-ratio:auto}
+.attract-scene #attract-replay canvas{aspect-ratio:16/9}
+.menu:after{content:'';position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,#eff1e8f2 0%,#eff1e8da 23%,#eff1e870 43%,#eff1e805 70%);pointer-events:none}
+.menu .hero-copy{padding:20px 0;flex:none;max-width:530px;width:46%}
+.menu h1{font-size:clamp(80px,9vw,128px)}
+.menu .menu-bottom{display:none}
+.attract-status{position:absolute;bottom:24px;right:28px;display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8faeddd;backdrop-filter:blur(8px);border:1px solid #e3ead7a0;border-radius:20px;font-size:10px;color:#50634d;letter-spacing:.4px;box-shadow:0 2px 10px #16251a12}
+.attract-status:before{content:'';height:6px;width:6px;background:#b5a175;border-radius:50%}
+.attract-status[data-live=true]:before{background:#668a51;box-shadow:0 0 0 3px #668a5120}
+@media(max-width:700px){.menu{min-height:calc(100svh - 76px);padding:24px 30px 88px;justify-content:center;align-items:flex-start}.menu .hero-copy{width:100%;max-width:420px;padding-top:0}.menu:after{background:linear-gradient(180deg,#eff1e8e6 0%,#eff1e8d9 38%,#eff1e83b 85%)}.menu h1{font-size:92px}.menu .feature-row{margin-top:24px}.attract-status{bottom:20px;right:20px;font-size:9px}.menu .logo-scissors{width:44px;height:44px;right:-58px}}
+
+.attract-scene{container-type:size}.attract-scene>canvas,.attract-scene>#attract-replay{inset:auto;top:50%;left:50%;width:max(100cqw,177.778cqh);height:max(100cqh,56.25cqw);transform:translate(-50%,-50%)}
+@media(max-width:700px){.attract-scene>canvas,.attract-scene>#attract-replay{top:auto;left:0;bottom:0;transform:none;width:100%;height:auto;aspect-ratio:16/9}.attract-scene{background:linear-gradient(#c3d8db,#c9d7b6)}}

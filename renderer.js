@@ -3,12 +3,14 @@ import {createEnvironment} from './environment.js';
 import {worldShape,overlapShape,contains,polygonArea} from './engine.js';
 import {getLevel} from './levels.js';
 const S=.01, H=720;
-export function createRenderer(canvas){
+export function createRenderer(canvas,options={}){
+ let disposed=false,raf=0,stateSetAt=performance.now();
  const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
- renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.18;
+ renderer.setPixelRatio(Math.min(devicePixelRatio,options.background?1.25:2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.18;
  const scene=new THREE.Scene();scene.background=new THREE.Color('#bad2da');
  const environment=createEnvironment(scene);
- const loader=new THREE.TextureLoader(),surfaces={};
+ let resolveReady;const ready=new Promise(resolve=>resolveReady=resolve);
+ const loader=new THREE.TextureLoader(new THREE.LoadingManager(()=>resolveReady())),surfaces={};
  for(const name of ['wood','clay','paper','soil']){const map=loader.load('textures/'+name+'.jpg'),bump=loader.load('textures/'+name+'-bump.jpg');map.colorSpace=THREE.SRGBColorSpace;for(const t of [map,bump]){t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());t.repeat.set(name==='paper'?2:1,name==='paper'?2:1);}surfaces[name]={map,bumpMap:bump,bumpScale:name==='paper'?.008:.018};}
  const camera=new THREE.OrthographicCamera(-7.05,7.05,3.97,-3.97,.1,70);camera.position.set(6.4,5.65,24);camera.lookAt(6.4,3.6,0);
  /* Sun, moon and sky illumination live in environment.js. */
@@ -28,12 +30,7 @@ export function createRenderer(canvas){
  // Open greenhouse: distant landscape, actual floor and structural beams. No shadow-catching backdrop.
  const floor=box(-150,720,1600,25,550,wood,-1.4);
  for(let z=-3.8;z<1;z+=.38){const seam=box(-150,719,1600,2,1,'#9b825d',z);seam.castShadow=false;}
- // Frame of a miniature paper greenhouse.
- for(const x of [37,1245])box(x,20,12,698,18,'#718b7c',-1.8);
- box(37,52,1216,10,18,'#718b7c',-1.8);box(37,300,1216,5,12,'#8ca394',-1.8);
- for(const x of [340,645,950])box(x,57,5,661,12,'#8ca394',-1.8);
- rod([.37,6.68,-1.8],[6.45,8.35,-1.8],.055,green);rod([12.45,6.68,-1.8],[6.45,8.35,-1.8],.055,green);
- for(const x of [37,340,645,950,1245]){box(x-5,626,15,92,28,'#789080',-1.8);for(const y of [70,300,635]){const bolt=new THREE.Mesh(new THREE.SphereGeometry(.027,12,8),mat('#c1c9bb',.35));bolt.scale.z=.4;bolt.position.copy(px(x+2,y,-1.7));staticRoot.add(bolt);}}
+ // Open-air garden: no house outline, posts, roof or window mullions.
  for(const p of level.platforms){
   box(p.x,p.y,p.w,p.h,62,p.kind==='ground'?'#d8c8a3':'#d9b987',-.05);
   box(p.x-2,p.y-3,p.w+4,8,69,p.kind==='ground'?'#9aae87':'#b7c59b',.01);
@@ -53,12 +50,14 @@ export function createRenderer(canvas){
  label('SEED POST',400,126,8,'#a69d7a',-.1);
  // Open flowerpot matches the three collision walls, with a visible hollow interior.
  const pot=level.pot,potGroup=new THREE.Group();staticRoot.add(potGroup);
- box(pot.x-pot.w/2,pot.y-pot.h,10,pot.h,52,terra,.03,potGroup);box(pot.x+pot.w/2-10,pot.y-pot.h,10,pot.h,52,terra,.03,potGroup);
- box(pot.x-pot.w/2,pot.y-10,pot.w,10,52,terra,.03,potGroup);
- box(pot.x-pot.w/2,pot.y-pot.h,pot.w,pot.h,5,inside,-.22,potGroup);
- // Low front face leaves the real opening readable.
- box(pot.x-pot.w/2,pot.y-42,pot.w,42,6,terra,.31,potGroup);
- box(pot.x-pot.w/2-4,pot.y-pot.h,18,10,60,mat('#e4a080'),.03,potGroup);box(pot.x+pot.w/2-14,pot.y-pot.h,18,10,60,mat('#e4a080'),.03,potGroup);
+ // A hollow, tapered clay vessel with a low front cutaway so the real seed remains visible.
+ const vessel=new THREE.Group();vessel.position.copy(px(pot.x,pot.y,-.05));vessel.scale.z=.52;potGroup.add(vessel);
+ const profile=[[.43,.10],[.52,.03],[.54,.08],[.73,1.12],[.76,1.17],[.76,1.22],[.63,1.22],[.61,1.13],[.44,.16],[.43,.10]].map(([r,y])=>new THREE.Vector2(r,y));
+ const shell=new THREE.Mesh(new THREE.LatheGeometry(profile,80,Math.PI*.32,Math.PI*1.36),[terra]);shell.castShadow=true;shell.receiveShadow=true;vessel.add(shell);
+ const frontProfile=[[.43,.10],[.52,.03],[.54,.08],[.59,.40],[.51,.40],[.44,.16],[.43,.10]].map(([r,y])=>new THREE.Vector2(r,y));
+ const front=new THREE.Mesh(new THREE.LatheGeometry(frontProfile,48,-Math.PI*.32,Math.PI*.64),terra);front.castShadow=true;front.receiveShadow=true;vessel.add(front);
+ const potSoil=new THREE.Mesh(new THREE.CylinderGeometry(.44,.44,.04,48),soil);potSoil.position.y=.13;potSoil.receiveShadow=true;vessel.add(potSoil);
+ for(const y of [.12,.34]){const ring=new THREE.Mesh(new THREE.TorusGeometry(.54+y*.14,.009,8,80),inside);ring.rotation.x=Math.PI/2;ring.position.y=y;ring.castShadow=true;vessel.add(ring);}
  const target=new THREE.Mesh(new THREE.TorusGeometry(.35,.012,6,48,Math.PI*2),new THREE.MeshBasicMaterial({color:'#e5c875',transparent:true,opacity:.65}));target.position.copy(px(pot.x,pot.y-56,.34));potGroup.add(target);
  label('SPECIAL DELIVERY',pot.x,pot.y-pot.h-28,7,'#92a179',-.25);
  // Garden details sit behind the play plane and cannot block movement.
@@ -89,9 +88,6 @@ export function createRenderer(canvas){
  // Chute fittings: folded copper lips, recessed mouth and fasteners.
  box(380,194,40,4,38,'#786b50',-.1);box(360,142,80,7,57,metal,-.1);
  for(const x of [379,421]){const bolt=new THREE.Mesh(new THREE.SphereGeometry(.025,12,8),metal);bolt.position.copy(px(x,155,.17));staticRoot.add(bolt);}
- for(const y of [pot.y-35,pot.y-13])box(pot.x-pot.w/2+3,y,pot.w-6,3,3,'#b67153',.353,potGroup);
- box(pot.x-pot.w/2+10,pot.y-12,pot.w-20,4,40,soil,.01,potGroup);
- for(const sign of [-1,1]){box(pot.x+sign*(pot.w/2-4)-4,pot.y-pot.h+10,8,pot.h-20,58,terra,.03,potGroup);}
  // Veined foliage with bent stems instead of flat cutout decorations.
  for(const [x,y] of [[26,638],[747,638],[1233,638],[975,503]]){
   for(let k=0;k<5;k++){
@@ -137,29 +133,33 @@ export function createRenderer(canvas){
  }
  function preview(){disposeGroup(previewRoot);if(!sim||!sim.bodies[active]?.alive)return;for(const b of sim.bodies){if(b.id===active)continue;const shape=overlapShape(sim.bodies[active],b);if(polygonArea(shape)<2)continue;const paths=shapePaths(shape);for(const path of paths){const mesh=new THREE.Mesh(new THREE.ShapeGeometry(path),previewMaterial);mesh.position.set(0,H*S,.38);mesh.renderOrder=10;previewRoot.add(mesh);}}}
  function draw(t){
-  const dt=Math.min((t-last)/1000,.05);last=t;
-  if(visible)environment.update(dt);
+  if(disposed)return;
+  const dt=options.manual?0:Math.max(0,Math.min((t-last)/1000,.05));last=t;
+  const sceneClock=sim?.attractIdle?undefined:(options.manual?(sim?.visual?.clock??sim?.time):sim?.time+(sim?.won?0:Math.max(0,Math.min(.1,(t-stateSetAt)/1000))));
+  if(visible)environment.update(dt,sceneClock);
+  if(sim&&!sim.attractIdle)t=sceneClock*1000;
   if(visible&&canvas.clientWidth>0){
    const w=canvas.clientWidth,h=canvas.clientHeight;if(canvas.width!==Math.floor(w*renderer.getPixelRatio())||canvas.height!==Math.floor(h*renderer.getPixelRatio()))renderer.setSize(w,h,false);
    if(sim){
     for(const b of sim.bodies){let r=roots[b.id];if(!r)roots[b.id]=r=makeCharacter(b);if(r.revision!==b.revision)rebuildCharacter(r,b);r.group.visible=b.alive;if(!b.alive)continue;
-     let pose=poses.get(b.id);if(!pose)poses.set(b.id,pose={x:b.x,y:b.y,a:b.angle});const mix=1-Math.exp(-dt*(b.id===active?35:19));pose.x+=(b.x-pose.x)*mix;pose.y+=(b.y-pose.y)*mix;let da=b.angle-pose.a;da=Math.atan2(Math.sin(da),Math.cos(da));pose.a+=da*mix;
+     let pose=poses.get(b.id);if(!pose)poses.set(b.id,pose={x:b.x,y:b.y,a:b.angle});const mix=options.manual?1:1-Math.exp(-dt*(b.id===active?35:19));pose.x+=(b.x-pose.x)*mix;pose.y+=(b.y-pose.y)*mix;let da=b.angle-pose.a;da=Math.atan2(Math.sin(da),Math.cos(da));pose.a+=da*mix;
      r.group.position.copy(px(pose.x,pose.y,.02+b.id*.035));r.body.rotation.z=r.features.rotation.z=-pose.a;
      const pts=worldShape(b).flatMap(p=>p[0]),bottom=Math.max(...pts.map(p=>p[1])),top=Math.min(...pts.map(p=>p[1]));
      const stride=Math.sin(t*.018+ b.id)*Math.min(Math.abs(b.physics?.velocity.x||0)/4,1)*.045;
      r.legs.children.forEach((foot,i)=>{foot.position.set((i?1:-1)*.15,-(bottom-b.y)*S+.025+(i?stride:-stride),.18);});
      r.halo.visible=r.marker.visible=r.tag.visible=b.id===active;r.halo.position.set(0,-(bottom-b.y)*S+.006,0);r.marker.position.set(0,(b.y-top)*S+.2,.1);r.tag.position.set(0,(b.y-top)*S+.43,.1);
     }
-    if(sim.ball){seed.position.copy(px(sim.ball.position.x,sim.ball.position.y,.08));seed.rotation.z=-sim.ball.angle;}else seed.position.copy(px(level.seed.x,level.seed.y,.02));
-    bridgeVisual+=(Number(sim.bridge)-bridgeVisual)*Math.min(1,dt*5);bridge.scale.x=Math.max(.015,bridgeVisual);bridge.visible=bridgeVisual>.02;
-    button.position.y=(H-(sim.released?494:488))*S;target.rotation.z=t*.0002;target.material.opacity=.4+Math.sin(t*.003)*.15;
-    flowerVisual+=(Number(sim.won)-flowerVisual)*Math.min(1,dt*2);flower.scale.setScalar(Math.max(.001,flowerVisual));flower.rotation.z=Math.sin(t*.002)*.04*flowerVisual;
+    if(sim.ball){seed.position.copy(px(sim.ball.position.x,sim.ball.position.y,.08));seed.rotation.z=-sim.ball.angle;}else {seed.position.copy(px(level.seed.x,level.seed.y,.02));seed.rotation.set(0,0,0);}
+    if(sim.visual)bridgeVisual=sim.visual.bridge;else bridgeVisual+=(Number(sim.bridge)-bridgeVisual)*Math.min(1,dt*5);bridge.scale.x=Math.max(.015,bridgeVisual);bridge.visible=bridgeVisual>.02;
+    button.position.y=(H-(sim.visual?.buttonY??(sim.released?494:488)))*S;target.rotation.z=t*.0002;target.material.opacity=.4+Math.sin(t*.003)*.15;
+    if(options.manual&&sim.visual)flowerVisual=sim.visual.flower;else flowerVisual+=(Number(sim.won)-flowerVisual)*Math.min(1,dt*2);flower.scale.setScalar(Math.max(.001,flowerVisual));flower.rotation.z=Math.sin(t*.002)*.04*flowerVisual;
     if(t-lastPreview>90){lastPreview=t;preview();}
    }
-   for(const p of scraps){p.life-=dt;p.mesh.position.addScaledVector(p.velocity,dt);p.velocity.y-=3*dt;p.mesh.rotation.z+=p.spin*dt;p.mesh.material.opacity=Math.min(1,p.life);if(p.life<=0){dynamicRoot.remove(p.mesh);p.mesh.geometry.dispose();p.mesh.material.dispose();}}for(let i=scraps.length-1;i>=0;i--)if(scraps[i].life<=0)scraps.splice(i,1);
+   for(const p of scraps){p.age+=dt;p.life=p.duration-p.age;p.mesh.position.copy(p.origin).addScaledVector(p.velocity,p.age);p.mesh.position.y-=1.5*p.age*p.age;p.mesh.rotation.z=p.spin*p.age;p.mesh.material.opacity=Math.min(1,p.life);if(p.life<=0){dynamicRoot.remove(p.mesh);p.mesh.geometry.dispose();p.mesh.material.dispose();}}for(let i=scraps.length-1;i>=0;i--)if(scraps[i].life<=0)scraps.splice(i,1);
    renderer.render(scene,camera);
-  }requestAnimationFrame(draw);
+  }if(!options.manual&&!disposed)raf=requestAnimationFrame(draw);
  }
- requestAnimationFrame(draw);
- return {set(s,a){sim=s;active=a;},show(v){visible=v;},reset(){poses.clear();disposeGroup(previewRoot);},effect(e){if(e.type!=='cut')return;const color=level.bodies[e.body].color;const points=e.shape.flatMap(poly=>poly[0]);for(let i=0;i<Math.min(18,points.length);i++){const p=points[Math.floor(i/Math.min(18,points.length)*points.length)];const m=new THREE.Mesh(new THREE.BoxGeometry(.04+Math.random()*.06,.08,.02),new THREE.MeshStandardMaterial({color,transparent:true}));m.position.copy(px(p[0],p[1],.2));dynamicRoot.add(m);scraps.push({mesh:m,life:1+Math.random()*.5,velocity:new THREE.Vector3((Math.random()-.5)*2,Math.random()*1.2,Math.random()*1.4),spin:(Math.random()-.5)*8});}},hit(x,y){const bounds=canvas.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((x-bounds.left)/bounds.width*2-1,-(y-bounds.top)/bounds.height*2+1),camera);const found=raycaster.intersectObjects(roots.filter(Boolean).map(r=>r.body),true);return found[0]?.object.userData.id;}};
+ if(!options.manual)raf=requestAnimationFrame(draw);
+ function effect(e,age=0){if(e.type!=='cut')return;let n=e.seed??(Math.round((sim?.time||0)*60)+e.body*997);const rand=()=>{n=(n*1664525+1013904223)>>>0;return n/4294967296;};const color=level.bodies[e.body].color;const points=e.shape.flatMap(poly=>poly[0]);for(let i=0;i<Math.min(18,points.length);i++){const p=points[Math.floor(i/Math.min(18,points.length)*points.length)];const m=new THREE.Mesh(new THREE.BoxGeometry(.04+rand()*.06,.08,.02),new THREE.MeshStandardMaterial({color,transparent:true}));m.position.copy(px(p[0],p[1],.2));dynamicRoot.add(m);const piece={mesh:m,life:1+rand()*.5,velocity:new THREE.Vector3((rand()-.5)*2,rand()*1.2,rand()*1.4),spin:(rand()-.5)*8,age,origin:m.position.clone()};piece.duration=piece.life;if(age){m.position.addScaledVector(piece.velocity,age);m.position.y-=1.5*age*age;m.rotation.z+=piece.spin*age;piece.life-=age;m.material.opacity=Math.min(1,piece.life);}scraps.push(piece);}}
+ return {ready,renderAt(s,time){sim=s;active=-1;visible=true;draw(time*1000);},dispose(){disposed=true;cancelAnimationFrame(raf);const mats=new Set(),textures=new Set();scene.traverse(o=>{o.geometry?.dispose();for(const m of (Array.isArray(o.material)?o.material:[o.material]))if(m)mats.add(m);});for(const m of mats){for(const value of Object.values(m))if(value?.isTexture)textures.add(value);m.dispose();}for(const texture of textures)texture.dispose();renderer.dispose();renderer.forceContextLoss();},set(s,a){sim=s;active=a;stateSetAt=performance.now();},show(v){visible=v;},reset(){poses.clear();bridgeVisual=0;flowerVisual=0;disposeGroup(previewRoot);for(const p of scraps){dynamicRoot.remove(p.mesh);p.mesh.geometry.dispose();p.mesh.material.dispose();}scraps.length=0;},effect,seekEffects(events,frame){for(const p of scraps){dynamicRoot.remove(p.mesh);p.mesh.geometry.dispose();p.mesh.material.dispose();}scraps.length=0;for(const e of events)if(e.type==='cut'&&e.frame<=frame&&frame-e.frame<90)effect(e,(frame-e.frame)/60);},hit(x,y){const bounds=canvas.getBoundingClientRect();raycaster.setFromCamera(new THREE.Vector2((x-bounds.left)/bounds.width*2-1,-(y-bounds.top)/bounds.height*2+1),camera);const found=raycaster.intersectObjects(roots.filter(Boolean).map(r=>r.body),true);return found[0]?.object.userData.id;}};
 }

@@ -12,3 +12,7 @@ Level designs, geometry and shaders are authored in code. The wood, clay, paper 
 Three.js is in `vendor/three.module.js`. The other three UMD distributions are embedded inside local CommonJS wrappers in `server.js` because the project backend requires one self-contained file. Browser modules re-export the exact same simulation.
 
 The polygon-clipping distribution also contains Splaytree 3.1.2 (Alexander Milevski, MIT), robust predicate arithmetic ([public-domain dedication](vendor/licenses/robust-predicates.txt)), and a TypeScript helper notice from Microsoft under [Apache 2.0](vendor/licenses/Apache-2.0.txt). Their embedded notices are retained. Splaytree's MIT permission and warranty terms are provided in [its license notice](vendor/licenses/splaytree.txt). The current tslib package's [license notice](vendor/licenses/tslib.txt) is also included for reference.
+
+## Replay playback
+
+Remotion and `@remotion/player` 4.0.273 are loaded from esm.sh for frame-addressable JSON replay playback with React 18.3.1 (MIT). Remotion uses the [Remotion license](https://www.remotion.dev/license); commercial teams should review its license requirements. Recordings are generated from this project’s authoritative simulation, not third-party footage.
